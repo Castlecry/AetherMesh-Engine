@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import * as THREE from 'three'
-import { generateFakeObjects, type SceneObject } from '@/types'
+import type { SceneObject } from '@/types'
+import { useSimulationStore } from '@/stores/simulationStore'
+import { getKernel } from '@/utils/wasmLoader'
+
+const props = defineProps<{
+  sceneObjects: SceneObject[]
+}>()
 
 const container = ref<HTMLDivElement>()
+const store = useSimulationStore()
 let renderer: THREE.WebGLRenderer
 let scene: THREE.Scene
 let camera: THREE.PerspectiveCamera
@@ -14,7 +21,6 @@ let robotMesh: THREE.InstancedMesh
 let frameCount = 0
 let lastFpsTime = performance.now()
 
-const sceneObjects: SceneObject[] = generateFakeObjects(100)
 const dummy = new THREE.Object3D()
 
 onMounted(() => {
@@ -51,8 +57,8 @@ onMounted(() => {
   scene.add(new THREE.GridHelper(20, 20, 0x444466, 0x222244))
 
   // Separate objects into box and sphere groups for InstancedMesh
-  const boxObjects = sceneObjects.filter(o => o.id !== 'obj_0' && o.meshType === 'box')
-  const sphereObjects = sceneObjects.filter(o => o.id !== 'obj_0' && o.meshType === 'sphere')
+  const boxObjects = props.sceneObjects.filter(o => o.id !== 'obj_0' && o.meshType === 'box')
+  const sphereObjects = props.sceneObjects.filter(o => o.id !== 'obj_0' && o.meshType === 'sphere')
 
   // Box instanced mesh
   const boxGeo = new THREE.BoxGeometry(1, 1, 1)
@@ -94,7 +100,7 @@ onMounted(() => {
   const robotMat = new THREE.MeshStandardMaterial({ roughness: 0.3, emissive: 0x004400, emissiveIntensity: 0.5 })
   robotMesh = new THREE.InstancedMesh(robotGeo, robotMat, 1)
   robotMesh.castShadow = true
-  const robot = sceneObjects[0]
+  const robot = props.sceneObjects[0]
   dummy.position.set(...robot.position)
   dummy.scale.set(robot.halfExtents[0] * 2, robot.halfExtents[1] * 2, robot.halfExtents[2] * 2)
   dummy.updateMatrix()
@@ -121,8 +127,64 @@ onMounted(() => {
       lastFpsTime = now
     }
 
+    // Robot movement toward target (S9)
+    updateRobotMovement()
+
     renderer.render(scene, camera)
   }
+
+  function updateRobotMovement() {
+    if (store.status !== 'navigating' || !store.robotTarget) return
+
+    const [rx, ry, rz] = store.robotPosition
+    const [tx, ty, tz] = store.robotTarget
+    const speed = 0.05
+
+    const dx = tx - rx
+    const dy = ty - ry
+    const dz = tz - rz
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    if (dist < 0.01) {
+      store.setStatus('idle')
+      store.robotTarget = null
+      return
+    }
+
+    const step = Math.min(speed, dist)
+    const newPos: [number, number, number] = [
+      rx + (dx / dist) * step,
+      ry + (dy / dist) * step,
+      rz + (dz / dist) * step,
+    ]
+
+    // Check collisions before moving
+    const kernel = getKernel()
+    if (kernel) {
+      const colls = kernel.getCollisions()
+      if (colls.length > 0) {
+        store.setCollisions(colls)
+        const backoff = 0.1
+        store.updateRobotPosition([
+          rx - (dx / dist) * backoff,
+          ry,
+          rz - (dz / dist) * backoff,
+        ])
+        return
+      }
+    }
+
+    store.updateRobotPosition(newPos)
+    store.setStatus('navigating')
+
+    // Update robot InstancedMesh
+    dummy.position.set(...newPos)
+    dummy.scale.set(0.6, 0.6, 0.6)
+    dummy.updateMatrix()
+    robotMesh.setMatrixAt(0, dummy.matrix)
+    robotMesh.instanceMatrix.needsUpdate = true
+  }
+
   animate()
 
   window.addEventListener('resize', onResize)
