@@ -1,0 +1,23 @@
+{
+  "name": "aethermesh-engine",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "pinia": "^2.1.7",
+    "three": "^0.170.0",
+    "vue": "^3.4.21"
+  },
+  "devDependencies": {
+    "@types/three": "^0.184.1",
+    "@vitejs/plugin-vue": "^5.0.4",
+    "typescript": "^5.4.2",
+    "vite": "^5.1.6",
+    "vue-tsc": "^2.0.6"
+  }
+}

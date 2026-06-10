@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.vite/
+core/build/
+frontend/public/wasm/*.js
+frontend/public/wasm/*.wasm
+frontend/public/wasm/*.data
+frontend/public/wasm/*.worker.js
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code internal
+.claude/
+
+# Logs
+*.log
