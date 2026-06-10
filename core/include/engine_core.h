@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
 #include <vector>
+#include <memory>
+#include "bvh.h"
 
 class EngineCore {
 public:
@@ -9,15 +11,22 @@ public:
 
   void init(int objectCount);
 
-  // Process positions: takes a pointer into Wasm linear memory (zero-copy from JS Float32Array)
-  // Returns pointer to the processed buffer for JS to read back
+  // Zero-copy vertex processing
   uintptr_t processVertices(uintptr_t dataPtr, int count);
 
+  // BVH operations (Sprint 6)
+  void buildBVH(uintptr_t aabbDataPtr, int count);
+  int traverseBVH(float minX, float minY, float minZ,
+                   float maxX, float maxY, float maxZ);
+  int getBVHNodeCount();
+  uintptr_t getBVHNodeData();
+
+  // Collision detection (Sprint 7)
+  void detectCollisions(uintptr_t aabbDataPtr, int objectCount, int robotIndex);
   int getCollisionCount();
   uintptr_t getCollisionData();
 
   float getTraversalTime();
-
   void dispose();
 
 private:
@@ -32,4 +41,7 @@ private:
     float contactX, contactY, contactZ;
   };
   std::vector<CollisionResult> collisions;
+
+  std::unique_ptr<BVHTree> bvh;
+  std::vector<float> bvhNodeData;
 };
