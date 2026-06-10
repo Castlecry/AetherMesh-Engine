@@ -1,4 +1,5 @@
 #include "engine_core.h"
+#include "minkowski.h"
 #include <emscripten/bind.h>
 #include <cstring>
 #include <chrono>
@@ -90,8 +91,52 @@ uintptr_t EngineCore::getBVHNodeData() {
 
 // === Collision Detection (Sprint 7 stub) ===
 
-void EngineCore::detectCollisions(uintptr_t /*aabbDataPtr*/, int /*objectCount*/, int /*robotIndex*/) {
-  // Implemented in Sprint 7 with GJK
+void EngineCore::detectCollisions(uintptr_t aabbDataPtr, int objectCount, int robotIndex) {
+  if (!bvh) return;
+  collisions.clear();
+
+  float* aabbData = reinterpret_cast<float*>(aabbDataPtr);
+
+  // Get robot AABB
+  int rOff = robotIndex * 6;
+  AABB robotAABB = {
+    aabbData[rOff], aabbData[rOff+1], aabbData[rOff+2],
+    aabbData[rOff+3], aabbData[rOff+4], aabbData[rOff+5]
+  };
+
+  // Broad-phase: BVH traverse
+  std::vector<int> candidates;
+  bvh->traverse(robotAABB, candidates);
+
+  // Narrow-phase: GJK on each candidate
+  auto aabbToVertices = [](float minX, float minY, float minZ, float maxX, float maxY, float maxZ) {
+    return std::vector<Vec3>{
+      {minX, minY, minZ}, {maxX, minY, minZ}, {maxX, maxY, minZ}, {minX, maxY, minZ},
+      {minX, minY, maxZ}, {maxX, minY, maxZ}, {maxX, maxY, maxZ}, {minX, maxY, maxZ}
+    };
+  };
+
+  auto robotVerts = aabbToVertices(robotAABB.minX, robotAABB.minY, robotAABB.minZ,
+                                    robotAABB.maxX, robotAABB.maxY, robotAABB.maxZ);
+
+  for (int objIdx : candidates) {
+    if (objIdx == robotIndex) continue;
+    int off = objIdx * 6;
+    auto objVerts = aabbToVertices(
+      aabbData[off], aabbData[off+1], aabbData[off+2],
+      aabbData[off+3], aabbData[off+4], aabbData[off+5]
+    );
+
+    float penetration;
+    Vec3 contact;
+    if (gjkIntersect(robotVerts, objVerts, penetration, contact)) {
+      collisions.push_back({
+        robotIndex, objIdx,
+        penetration,
+        contact.x, contact.y, contact.z
+      });
+    }
+  }
 }
 
 int EngineCore::getCollisionCount() {
