@@ -5,22 +5,21 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_executable(engine_core src/engine_core.cpp)
+target_include_directories(engine_core PRIVATE include)
+
 if(EMSCRIPTEN)
-  set(CMAKE_EXECUTABLE_SUFFIX ".js")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -flto")
-  set(CMAKE_EXECUTABLE_LINKER_FLAGS "${CMAKE_EXECUTABLE_LINKER_FLAGS} \
-    -s WASM=1 \
-    -s MODULARIZE=1 \
-    -s EXPORT_NAME='createAetherModule' \
-    -s ALLOW_MEMORY_GROWTH=1 \
-    -s INITIAL_MEMORY=256MB \
-    -s MAXIMUM_MEMORY=1GB \
-    --pre-js ${CMAKE_SOURCE_DIR}/../core/src/pre.js"
+  target_compile_options(engine_core PRIVATE -O3 -flto)
+  target_link_options(engine_core PRIVATE
+    -O3
+    -flto
+    -sWASM=1
+    -sMODULARIZE=1
+    "-sEXPORT_NAME=createAetherModule"
+    -sALLOW_MEMORY_GROWTH=1
+    "-sINITIAL_MEMORY=268435456"
+    "-sMAXIMUM_MEMORY=1073741824"
+    --bind
+    "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/src/pre.js"
   )
 endif()
-
-add_executable(engine_core
-  src/engine_core.cpp
-)
-
-include_directories(include)
