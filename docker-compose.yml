@@ -1,0 +1,84 @@
+# ============================================================
+# AetherMesh Engine — Docker Compose
+#
+# Architecture:
+#   frontend (:3000) ──proxy──▶ backend (:3001) ──fetch──▶ Ollama (host :11434)
+#
+# Usage:
+#   docker compose --profile build run wasm-builder   # Build Wasm once
+#   docker compose up -d                               # Start backend + frontend
+#   docker compose --profile build up -d               # Build Wasm + start all
+#   docker compose down                                # Stop everything
+# ============================================================
+
+services:
+  # ----------------------------------------------------------
+  # Emscripten Wasm Builder (one-shot, profile=gated)
+  # ----------------------------------------------------------
+  wasm-builder:
+    image: emscripten/emsdk:4.0.3
+    profiles:
+      - build
+    working_dir: /src
+    volumes:
+      - ./core:/src/core
+      - build-cache:/src/core/build
+      - wasm-output:/out
+    command: >
+      sh -c "
+        mkdir -p /src/core/build /out &&
+        cd /src/core/build &&
+        emcmake cmake .. -DCMAKE_BUILD_TYPE=Release &&
+        emmake make -j$$(nproc) &&
+        cp engine_core.js engine_core.wasm /out/ 2>/dev/null || true &&
+        cp engine_core.worker.js /out/ 2>/dev/null || true &&
+        echo '=== Wasm build complete ===' &&
+        ls -la /out/
+      "
+
+  # ----------------------------------------------------------
+  # Express API Backend — AI instruction parsing + Ollama proxy
+  # ----------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend/src:/app/src:ro
+      - ./ai:/ai:ro
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=qwen3.5:9b
+      - AI_MODE=real
+      - AI_RETRY_COUNT=2
+      - PORT=3001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ----------------------------------------------------------
+  # Vue 3 + Vite Frontend Dev Server
+  # ----------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/src:/app/src:ro
+      - ./frontend/public:/app/public:ro
+      - ./frontend/index.html:/app/index.html:ro
+      - ./frontend/vite.config.ts:/app/vite.config.ts:ro
+      - ./frontend/tsconfig.json:/app/tsconfig.json:ro
+      - ./frontend/tsconfig.node.json:/app/tsconfig.node.json:ro
+      - wasm-output:/app/public/wasm
+    environment:
+      - VITE_BACKEND_URL=http://localhost:3001
+
+volumes:
+  wasm-output:
+  build-cache:

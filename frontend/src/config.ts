@@ -1,7 +1,9 @@
 export const ENGINE_CONFIG = {
   ai: {
-    mode: 'mock' as 'real' | 'mock',
-    ollamaUrl: 'http://localhost:11434',
+    mode: 'real' as 'real' | 'mock',
+    // Backend API base URL — relative path goes through Vite proxy in dev,
+    // or set VITE_BACKEND_URL env var to point directly at the backend server.
+    backendUrl: import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3001',
     model: 'qwen3.5:9b',
     retryCount: 2,
   },

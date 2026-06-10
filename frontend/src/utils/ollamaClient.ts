@@ -1,52 +1,6 @@
 import type { IInstruction, SceneObject } from '@/types'
 import { ENGINE_CONFIG } from '@/config'
 
-let cachedSystemPrompt = ''
-
-const VALID_ACTIONS = new Set([
-  'move_to', 'pick_up', 'place_down', 'follow_path',
-  'query', 'query_user', 'stop', 'unknown'
-])
-
-export async function loadSystemPrompt(): Promise<string> {
-  if (cachedSystemPrompt) return cachedSystemPrompt
-  const resp = await fetch('/ai/system_prompt.txt')
-  cachedSystemPrompt = await resp.text()
-  return cachedSystemPrompt
-}
-
-function validateAndParse(raw: string): IInstruction | null {
-  let cleaned = raw.trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim()
-
-  let parsed: any
-  try {
-    parsed = JSON.parse(cleaned)
-  } catch {
-    const match = cleaned.match(/\{[\s\S]*?\}/)
-    if (!match) return null
-    try { parsed = JSON.parse(match[0]) } catch { return null }
-  }
-
-  if (!parsed.action || !VALID_ACTIONS.has(parsed.action)) return null
-
-  const { action, ...params } = parsed
-  return { action: action as IInstruction['action'], params, raw: cleaned }
-}
-
-function buildSceneObjectsBlock(objects: SceneObject[]): string {
-  if (objects.length === 0) return '（场景中暂无物体）'
-  return objects
-    .map(o => `- ${o.id} [${o.position.join(', ')}] tag=${o.tag}`)
-    .join('\n')
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
 // Mock parser for offline development
 function mockParse(userInput: string, sceneObjects: SceneObject[]): IInstruction {
   const input = userInput.trim()
@@ -116,43 +70,31 @@ export async function parseInstruction(
     return mockParse(userInput, sceneObjects)
   }
 
-  const systemPrompt = await loadSystemPrompt()
-  const sceneBlock = buildSceneObjectsBlock(sceneObjects)
-  const fullSystem = systemPrompt.replace('{{SCENE_OBJECTS}}', sceneBlock)
+  // Real mode: call backend API, which proxies to Ollama
+  const url = `${ENGINE_CONFIG.ai.backendUrl}/api/parse`
 
   for (let attempt = 0; attempt <= ENGINE_CONFIG.ai.retryCount; attempt++) {
     try {
-      const response = await fetch(`${ENGINE_CONFIG.ai.ollamaUrl}/api/generate`, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: ENGINE_CONFIG.ai.model,
-          system: fullSystem,
-          prompt: userInput,
-          stream: false,
-          options: {
-            temperature: 0.1,
-            top_p: 0.9,
-            stop: ['\n\n', '\n', '```']
-          }
-        })
+        body: JSON.stringify({ userInput: userInput.trim(), sceneObjects })
       })
 
       if (!response.ok) {
         console.warn(`[ollamaClient] Attempt ${attempt + 1}: HTTP ${response.status}`)
-        await delay(200 * (attempt + 1))
+        await new Promise(r => setTimeout(r, 200 * (attempt + 1)))
         continue
       }
 
       const data = await response.json()
-      const parsed = validateAndParse(data.response)
-      if (parsed) return parsed
+      if (data.action) return data as IInstruction
 
-      console.warn(`[ollamaClient] Attempt ${attempt + 1}: validation failed`)
-      await delay(500 * (attempt + 1))
+      console.warn(`[ollamaClient] Attempt ${attempt + 1}: invalid response`)
+      await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
     } catch (err) {
       console.warn(`[ollamaClient] Attempt ${attempt + 1}:`, err)
-      await delay(200 * (attempt + 1))
+      await new Promise(r => setTimeout(r, 200 * (attempt + 1)))
     }
   }
 

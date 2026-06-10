@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+.gitignore
+*.md
+.vscode
+.claude
+docs
+*.png
+core/build
+frontend/public/wasm/*.js
+frontend/public/wasm/*.wasm
+frontend/public/wasm/*.data
+frontend/public/wasm/*.worker.js
