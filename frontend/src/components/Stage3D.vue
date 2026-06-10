@@ -114,7 +114,9 @@ onMounted(() => {
     const now = performance.now()
     if (now - lastFpsTime >= 500) {
       const fps = Math.round(frameCount / ((now - lastFpsTime) / 1000))
-      console.log(`FPS: ${fps}, DrawCalls: ${renderer.info.render.calls}`)
+      if ((window as any).__profilerUpdate) {
+        (window as any).__profilerUpdate(fps, renderer.info.render.calls, 0)
+      }
       frameCount = 0
       lastFpsTime = now
     }
