@@ -10,8 +10,8 @@ const GRID_RES = 0.25       // finer grid → ~60×60
 const GRID_MIN = -7.5
 const GRID_MAX = 7.5
 const GRID_SIZE = Math.floor((GRID_MAX - GRID_MIN) / GRID_RES) + 1
-const ROBOT_RADIUS = 0.35   // robot halfExtents (0.3) + safety margin
-const OBSTACLE_PAD = 0.45   // how much to inflate obstacles in grid
+const ROBOT_RADIUS = 0.35   // robot halfExtents (0.3) + 0.05 margin
+const OBSTACLE_PAD = 0.35   // must match ROBOT_RADIUS: grid cell blocked where robot center can't go
 
 // ---- Helpers ----
 
@@ -84,14 +84,27 @@ export function findPath(
   const clamp = (v: number) => Math.max(0, Math.min(GRID_SIZE - 1, v))
   const key = (x: number, z: number) => `${x},${z}`
 
-  const sx = clamp(worldToGrid(startX)), sz = clamp(worldToGrid(startZ))
-  const tx = clamp(worldToGrid(targetX)), tz = clamp(worldToGrid(targetZ))
-  if (grid[sx]?.[sz]) return null
+  const sxRaw = worldToGrid(startX), szRaw = worldToGrid(startZ)
+  const txRaw = worldToGrid(targetX), tzRaw = worldToGrid(targetZ)
+  let sx = clamp(sxRaw), sz = clamp(szRaw)
+  const tx = clamp(txRaw), tz = clamp(tzRaw)
+
+  // If start cell is blocked, try nearby cells
+  if (grid[sx]?.[sz]) {
+    let foundStart = false
+    for (let r = 1; r <= 4 && !foundStart; r++)
+      for (let dx = -r; dx <= r && !foundStart; dx++)
+        for (let dz = -r; dz <= r && !foundStart; dz++) {
+          const nx = clamp(sx + dx), nz = clamp(sz + dz)
+          if (!grid[nx]?.[nz]) { sx = nx; sz = nz; foundStart = true }
+        }
+    if (!foundStart) return null
+  }
 
   // Target candidates: prefer exact target, then nearby clear cells
   const targets: [number, number][] = []
   if (!grid[tx]?.[tz]) targets.push([tx, tz])
-  for (let r = 1; r <= 4 && targets.length < 5; r++)
+  for (let r = 1; r <= 6 && targets.length < 9; r++)
     for (let dx = -r; dx <= r; dx++)
       for (let dz = -r; dz <= r; dz++) {
         const nx = clamp(tx + dx), nz = clamp(tz + dz)
@@ -108,7 +121,7 @@ export function findPath(
   const dirs = [[1,0],[0,1],[-1,0],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]
   let found: Cell | null = null
 
-  while (open.length > 0 && open.length < 8000) {
+  while (open.length > 0 && open.length < 20000) {
     let best = 0
     for (let i = 1; i < open.length; i++) if (open[i].f < open[best].f) best = i
     const cur = open.splice(best, 1)[0]
