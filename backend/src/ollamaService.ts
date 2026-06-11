@@ -189,6 +189,92 @@ export async function generateScene(description: string): Promise<SceneObject[]>
   throw new Error(lastErr || 'Ollama 无法访问，请确认服务正在运行')
 }
 
+// ---- AI path planning (fallback) ----
+
+const PATH_PLAN_PROMPT = [
+  '你是路径规划器。给定起点、终点和场景中的障碍物位置，判断机器人能否到达。',
+  '坐标范围 x,z∈[-7.5,7.5]，y∈[0,2]。机器人半径约0.35。',
+  '如果能到达，输出: {"reachable":true,"waypoints":[[x,0.3,z],[x,0.3,z],...]}',
+  'waypoints 是机器人需要经过的一系列中间点(含终点)，避开障碍物。',
+  '如果无法到达(所有路径都被阻塞)，输出: {"reachable":false,"reason":"..."}',
+  '只能输出一个JSON对象，禁止任何解释、Markdown。',
+].join('\n')
+
+interface PathPlanResult {
+  reachable: boolean
+  waypoints?: [number, number, number][]
+  reason?: string
+}
+
+function parsePathJSON(raw: string): PathPlanResult | null {
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+  try {
+    const data = JSON.parse(cleaned)
+    if (typeof data.reachable !== 'boolean') return null
+    if (data.reachable && Array.isArray(data.waypoints) && data.waypoints.length > 0) {
+      return {
+        reachable: true,
+        waypoints: data.waypoints.map((w: any) => {
+          const arr = Array.isArray(w) ? w : (w.position ?? [w.x, w.y, w.z])
+          return [Number(arr[0]) || 0, 0.3, Number(arr[2]) || 0] as [number, number, number]
+        })
+      }
+    }
+    return { reachable: false, reason: data.reason ?? 'unknown' }
+  } catch {
+    // Try to extract JSON object
+    const m = cleaned.match(/\{[\s\S]*\}/)
+    if (!m) return null
+    try { return parsePathJSON(m[0]) } catch { return null }
+  }
+}
+
+export async function planPath(
+  start: [number, number, number],
+  target: [number, number, number],
+  sceneObjects: SceneObject[]
+): Promise<PathPlanResult> {
+  if (AI_MODE !== 'real') {
+    // In mock mode, just say reachable with direct path
+    return { reachable: true, waypoints: [target] }
+  }
+
+  // Build obstacle summary for the AI
+  const obstacles = sceneObjects
+    .filter(o => o.tag !== 'robot' && o.id !== sceneObjects[0]?.id)
+    .map(o => `- ${o.tag} at (${o.position[0].toFixed(1)},${o.position[2].toFixed(1)}) size ${o.halfExtents[0].toFixed(1)}×${o.halfExtents[2].toFixed(1)}`)
+    .join('\n')
+
+  const prompt = [
+    `起点: (${start[0].toFixed(1)}, ${start[2].toFixed(1)})`,
+    `终点: (${target[0].toFixed(1)}, ${target[2].toFixed(1)})`,
+    `障碍物:`,
+    obstacles || '(无)',
+    `请判断能否到达，如果能请给出waypoints。`,
+  ].join('\n')
+
+  for (let i = 0; i <= RETRY_COUNT; i++) {
+    try {
+      const text = await ollamaFetch({
+        model: OLLAMA_MODEL,
+        system: PATH_PLAN_PROMPT,
+        prompt,
+        options: { temperature: 0.1, top_p: 0.9 }
+      })
+      console.log(`[planPath] AI response: ${text.slice(0, 200)}`)
+      const result = parsePathJSON(text)
+      if (result) return result
+      console.warn(`[planPath] attempt ${i + 1}: parse failed`)
+      await delay(400 * (i + 1))
+    } catch (err: any) {
+      console.warn(`[planPath] attempt ${i + 1}: ${err?.message ?? err}`)
+      await delay(400 * (i + 1))
+    }
+  }
+
+  return { reachable: false, reason: 'AI path planning failed' }
+}
+
 // ---- Mock parsers ----
 
 function mockParse(userInput: string, sceneObjects: SceneObject[]): IInstruction {

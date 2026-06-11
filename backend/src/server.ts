@@ -1,6 +1,6 @@
 import express from 'express'
 import cors from 'cors'
-import { parseInstruction, generateScene, checkOllamaHealth } from './ollamaService.js'
+import { parseInstruction, generateScene, planPath, checkOllamaHealth } from './ollamaService.js'
 
 const app = express()
 app.use(cors())
@@ -62,6 +62,25 @@ app.post('/api/generate-scene', async (req, res) => {
     const msg = err?.message ?? String(err)
     console.error('[backend] generate-scene error:', msg)
     res.status(500).json({ error: `场景生成失败: ${msg}` })
+  }
+})
+
+// === AI-assisted path planning (fallback when A* fails) ===
+app.post('/api/plan-path', async (req, res) => {
+  const { start, target, sceneObjects } = req.body
+
+  if (!start || !target || !Array.isArray(sceneObjects)) {
+    res.status(400).json({ error: '缺少 start/target/sceneObjects 字段' })
+    return
+  }
+
+  try {
+    console.log(`[backend] AI path planning: ${start} → ${target}`)
+    const result = await planPath(start, target, sceneObjects)
+    res.json(result)
+  } catch (err: any) {
+    console.error('[backend] plan-path error:', err?.message ?? err)
+    res.json({ reachable: false })
   }
 })
 

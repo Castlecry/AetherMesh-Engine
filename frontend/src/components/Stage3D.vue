@@ -4,6 +4,7 @@ import * as THREE from 'three'
 import type { SceneObject } from '@/types'
 import { useSimulationStore } from '@/stores/simulationStore'
 import { getKernel } from '@/utils/wasmLoader'
+import { isPositionBlocked, findBestClearDirection } from '@/utils/pathfinding'
 
 const props = defineProps<{ sceneObjects: SceneObject[] }>()
 const container = ref<HTMLDivElement>()
@@ -21,6 +22,8 @@ let allObjectsMap = new Map<string, { mesh: THREE.InstancedMesh; instanceId: num
 let highlightBox: THREE.Mesh
 let pathLine: THREE.Line | null = null
 let pathDots: THREE.Mesh[] = []
+let robotGlowRing: THREE.Mesh
+let robotBeacon: THREE.Mesh
 
 // Raycaster
 const raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2()
@@ -77,15 +80,20 @@ function rebuildScene() {
   const robot = objs[0]
   if (robot) {
     robotObjectId = robot.id
+    // Neon-cyan robot body — easily distinguishable
     const g = new THREE.BoxGeometry(1, 1, 1)
-    robotMesh = new THREE.InstancedMesh(g, new THREE.MeshStandardMaterial({ roughness: 0.3, emissive: 0x004400, emissiveIntensity: 0.5 }), 1)
+    robotMesh = new THREE.InstancedMesh(g, new THREE.MeshStandardMaterial({
+      roughness: 0.2,
+      metalness: 0.3,
+      color: 0x00ffcc,
+      emissive: 0x00ffcc,
+      emissiveIntensity: 0.7,
+    }), 1)
     robotMesh.castShadow = true
     dummy.position.set(...robot.position)
     dummy.scale.set(robot.halfExtents[0] * 2, robot.halfExtents[1] * 2, robot.halfExtents[2] * 2)
     dummy.updateMatrix(); robotMesh.setMatrixAt(0, dummy.matrix)
-    robotMesh.setColorAt(0, new THREE.Color(0, 1, 0.5))
     robotMesh.instanceMatrix.needsUpdate = true
-    if (robotMesh.instanceColor) robotMesh.instanceColor.needsUpdate = true
     scene.add(robotMesh)
     allObjectsMap.set(robot.id, { mesh: robotMesh, instanceId: 0 })
   }
@@ -126,12 +134,27 @@ function updatePathLine() {
 
 // ---- Update per-frame ----
 
-function lerpPos(a: [number, number, number], b: [number, number, number], t: number): [number, number, number] {
-  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+// Position ring buffer — last 120 frames (2s @ 60fps)
+const POS_HISTORY_SIZE = 120
+const posHistory: { x: number; z: number }[] = []
+let replanning = false
+
+function isRobotStuck(): boolean {
+  if (posHistory.length < POS_HISTORY_SIZE) return false
+  const first = posHistory[0]
+  const last = posHistory[posHistory.length - 1]
+  const dx = last.x - first.x
+  const dz = last.z - first.z
+  // Less than 0.15 units moved in 2 seconds → stuck
+  return Math.sqrt(dx * dx + dz * dz) < 0.15
 }
 
 function updateRobotMovement() {
-  if (store.status !== 'navigating' || !store.robotTarget) return
+  if (store.status !== 'navigating' || !store.robotTarget) {
+    posHistory.length = 0
+    replanning = false
+    return
+  }
 
   const pos = store.robotPosition
   const tgt = store.robotTarget
@@ -139,42 +162,66 @@ function updateRobotMovement() {
   const dx = tgt[0] - pos[0], dy = tgt[1] - pos[1], dz = tgt[2] - pos[2]
   const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
 
+  // Record position history
+  posHistory.push({ x: pos[0], z: pos[2] })
+  if (posHistory.length > POS_HISTORY_SIZE) posHistory.shift()
+
+  // Stuck detection — 2s no meaningful movement
+  if (!replanning && isRobotStuck()) {
+    replanning = true
+    console.log('[Stage3D] Robot stuck for 2s, replanning via AI...')
+    const finalTarget = store.waypoints.length > 0
+      ? store.waypoints[store.waypoints.length - 1]
+      : store.robotTarget
+    if (finalTarget) {
+      store.planPathTo(finalTarget).finally(() => {
+        replanning = false
+        posHistory.length = 0
+      })
+    }
+    return
+  }
+
   if (dist < 0.08) {
+    posHistory.length = 0
     store.advanceWaypoint()
     updatePathLine()
     return
   }
 
   const step = Math.min(speed, dist)
-  const newPos: [number, number, number] = [
+  const candidate: [number, number, number] = [
     pos[0] + (dx / dist) * step,
     pos[1] + (dy / dist) * step,
     pos[2] + (dz / dist) * step,
   ]
 
-  // Simple collision check
-  const kernel = getKernel()
-  if (kernel) {
-    const colls = kernel.getCollisions()
-    if (colls.length > 0) {
-      store.setCollisions(colls)
-      // Try to step sideways
-      const sideX = -(dz / dist) * 0.15
-      const sideZ = (dx / dist) * 0.15
-      store.updateRobotPosition([pos[0] + sideX, pos[1], pos[2] + sideZ])
+  // --- Collision pre-check with radial sliding ---
+  const robotId = props.sceneObjects[0]?.id ?? 'obj_0'
+  if (isPositionBlocked(candidate[0], candidate[2], props.sceneObjects, robotId)) {
+    // Try radial search for best clear direction
+    const best = findBestClearDirection(pos[0], pos[2], dx, dz, props.sceneObjects, robotId, step * 1.5)
+    if (best) {
+      store.updateRobotPosition([best.x, pos[1], best.z])
       return
     }
+    // All directions blocked → don't move, stuck detection will replan
+    return
   }
 
-  store.updateRobotPosition(newPos)
+  store.updateRobotPosition(candidate)
 
+  // Update robot mesh + glow
+  const rp = store.robotPosition
   if (robotMesh) {
-    dummy.position.set(...newPos)
+    dummy.position.set(...rp)
     dummy.scale.set(0.6, 0.6, 0.6)
     dummy.updateMatrix()
     robotMesh.setMatrixAt(0, dummy.matrix)
     robotMesh.instanceMatrix.needsUpdate = true
   }
+  robotGlowRing.position.set(rp[0], 0.05, rp[2])
+  robotBeacon.position.set(rp[0], rp[1] + 0.55, rp[2])
 
   updatePathLine()
 }
@@ -186,11 +233,11 @@ function updateHighlight() {
   if (!obj) { highlightBox.visible = false; return }
   highlightBox.visible = true
   highlightBox.position.set(...obj.position)
-  highlightBox.scale.set(
-    obj.halfExtents[0] * 2 + 0.15,
-    obj.halfExtents[1] * 2 + 0.15,
-    obj.halfExtents[2] * 2 + 0.15
-  )
+  // Match actual rendered size: spheres use uniform halfExtents[0]; boxes use per-axis
+  const sx = obj.halfExtents[0] * 2 + 0.15
+  const sy = obj.halfExtents[1] * 2 + 0.15
+  const sz = (obj.meshType === 'sphere' ? obj.halfExtents[0] : obj.halfExtents[2]) * 2 + 0.15
+  highlightBox.scale.set(sx, sy, sz)
 }
 
 // ---- Click handling ----
@@ -277,6 +324,17 @@ onMounted(() => {
   highlightBox.visible = false
   scene.add(highlightBox)
 
+  // Glow ring under robot
+  const ringGeo = new THREE.TorusGeometry(0.45, 0.05, 8, 24)
+  robotGlowRing = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0x00ffcc }))
+  robotGlowRing.rotation.x = -Math.PI / 2
+  scene.add(robotGlowRing)
+
+  // Beacon dot on top of robot
+  const beaconGeo = new THREE.SphereGeometry(0.12, 8, 8)
+  robotBeacon = new THREE.Mesh(beaconGeo, new THREE.MeshBasicMaterial({ color: 0x00ffcc }))
+  scene.add(robotBeacon)
+
   rebuildScene()
   container.value.addEventListener('click', onClick)
   container.value.addEventListener('contextmenu', onRightClick)
@@ -305,6 +363,8 @@ onUnmounted(() => {
   cancelAnimationFrame(animationId)
   ;[boxMesh, sphereMesh, robotMesh].forEach(m => m?.dispose())
   highlightBox?.geometry?.dispose(); (highlightBox?.material as THREE.Material)?.dispose()
+  robotGlowRing?.geometry?.dispose(); (robotGlowRing?.material as THREE.Material)?.dispose()
+  robotBeacon?.geometry?.dispose(); (robotBeacon?.material as THREE.Material)?.dispose()
   clearPathLine()
   renderer?.dispose()
   window.removeEventListener('resize', onResize)

@@ -55,10 +55,10 @@ function mulberry32(seed: number): () => number {
 export type ScenePreset = 'default' | 'warehouse' | 'scattered' | 'corridor'
 
 const PRESET_CONFIGS: Record<ScenePreset, { count: number; seed: number; desc: string }> = {
-  default:   { count: 80,  seed: 42,    desc: '默认随机场景' },
-  warehouse: { count: 120, seed: 2024,  desc: '密集仓库场景' },
-  scattered: { count: 30,  seed: 9999,  desc: '稀疏空旷场景' },
-  corridor:  { count: 50,  seed: 7777,  desc: '走廊通道场景' },
+  default:   { count: 25,  seed: 42,    desc: '开放测试场景 — 物体少、路径多' },
+  warehouse: { count: 90,  seed: 2024,  desc: '密集仓库场景' },
+  scattered: { count: 15,  seed: 9999,  desc: '稀疏空旷场景' },
+  corridor:  { count: 35,  seed: 7777,  desc: '走廊通道场景' },
 }
 
 const COLORS: [number, number, number][] = [
@@ -112,19 +112,18 @@ export function generatePresetScene(preset: ScenePreset): SceneObject[] {
 }
 
 // ---- De-overlap: push apart overlapping objects ----
-export function deoverlapObjects(objects: SceneObject[], iterations = 8): SceneObject[] {
+export function deoverlapObjects(objects: SceneObject[], iterations = 20): SceneObject[] {
   const objs = objects.map(o => ({ ...o, position: [...o.position] as [number, number, number] }))
-  const skipIds = new Set([objs[0]?.id]) // don't move the robot
+  const robot = objs[0]
 
+  // Phase 1: standard de-overlap between all pairs
   for (let iter = 0; iter < iterations; iter++) {
+    let moved = false
     for (let i = 1; i < objs.length; i++) {
-      if (skipIds.has(objs[i].id)) continue
-      for (let j = i + 1; j < objs.length; j++) {
-        if (skipIds.has(objs[j].id)) continue
-
+      for (let j = 0; j < objs.length; j++) {
+        if (i === j) continue
         const a = objs[i], b = objs[j]
 
-        // AABB overlap check
         const dx = Math.abs(a.position[0] - b.position[0])
         const dy = Math.abs(a.position[1] - b.position[1])
         const dz = Math.abs(a.position[2] - b.position[2])
@@ -132,32 +131,55 @@ export function deoverlapObjects(objects: SceneObject[], iterations = 8): SceneO
         const oy = a.halfExtents[1] + b.halfExtents[1] - dy
         const oz = a.halfExtents[2] + b.halfExtents[2] - dz
 
-        if (ox <= 0 || oy <= 0 || oz <= 0) continue // no overlap
+        if (ox <= 0 || oy <= 0 || oz <= 0) continue
 
-        // Push apart on axis of minimum overlap
-        const sign = a.position[0] > b.position[0] ? 1 : -1
+        const signX = a.position[0] > b.position[0] ? 1 : -1
+        const signY = a.position[1] > b.position[1] ? 1 : -1
+        const signZ = a.position[2] > b.position[2] ? 1 : -1
+        // If b is robot, push a away with full force and don't move robot
+        const factor = (b.id === robot?.id) ? 1.2 : 0.55
+
         if (ox <= oy && ox <= oz) {
-          a.position[0] += sign * ox * 0.55
-          b.position[0] -= sign * ox * 0.55
+          a.position[0] += signX * ox * factor
+          if (b.id !== robot?.id) b.position[0] -= signX * ox * factor
         } else if (oy <= ox && oy <= oz) {
-          const sy = a.position[1] > b.position[1] ? 1 : -1
-          a.position[1] += sy * oy * 0.55
-          b.position[1] -= sy * oy * 0.55
+          a.position[1] += signY * oy * factor
+          if (b.id !== robot?.id) b.position[1] -= signY * oy * factor
         } else {
-          const sz = a.position[2] > b.position[2] ? 1 : -1
-          a.position[2] += sz * oz * 0.55
-          b.position[2] -= sz * oz * 0.55
+          a.position[2] += signZ * oz * factor
+          if (b.id !== robot?.id) b.position[2] -= signZ * oz * factor
         }
 
-        // Clamp to bounds
         for (const obj of [a, b]) {
+          if (obj.id === robot?.id) continue
           obj.position[0] = Math.max(-7.5, Math.min(7.5, obj.position[0]))
           obj.position[1] = Math.max(0.2, Math.min(2, obj.position[1]))
           obj.position[2] = Math.max(-7.5, Math.min(7.5, obj.position[2]))
         }
+        moved = true
+      }
+    }
+    if (!moved) break // converged early
+  }
+
+  // Phase 2: guarantee robot clear zone (radius 2.0)
+  if (robot) {
+    const CLEAR_RADIUS = 2.0
+    for (const obj of objs) {
+      if (obj.id === robot.id) continue
+      const dx = obj.position[0] - robot.position[0]
+      const dz = obj.position[2] - robot.position[2]
+      const dist = Math.sqrt(dx * dx + dz * dz)
+      if (dist < CLEAR_RADIUS + obj.halfExtents[0] + robot.halfExtents[0]) {
+        const pushDist = CLEAR_RADIUS + obj.halfExtents[0] + robot.halfExtents[0] - dist + 0.3
+        const nx = dist > 0.001 ? dx / dist : 1
+        const nz = dist > 0.001 ? dz / dist : 0
+        obj.position[0] = Math.max(-7.5, Math.min(7.5, obj.position[0] + nx * pushDist))
+        obj.position[2] = Math.max(-7.5, Math.min(7.5, obj.position[2] + nz * pushDist))
       }
     }
   }
+
   return objs
 }
 

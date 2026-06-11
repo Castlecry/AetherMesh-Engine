@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { SceneObject, CollisionPair, IInstruction, ProfilerSnapshot } from '@/types'
+import { isDirectPathClear, findPath } from '@/utils/pathfinding'
 
 export type PathStatus = 'idle' | 'planning' | 'moving' | 'blocked' | 'arrived' | 'unreachable'
 
@@ -63,14 +64,41 @@ export const useSimulationStore = defineStore('simulation', () => {
     }
   }
 
-  /** Clicking ground always moves the robot */
+  /** Plan path to target using A* only */
+  async function planPathTo(target: [number, number, number]) {
+    const objs = sceneObjects.value
+    const robotId = objs[0]?.id ?? 'obj_0'
+    const [rx, , rz] = robotPosition.value
+    const [tx, , tz] = target
+
+    // Direct line clear?
+    if (isDirectPathClear(rx, rz, tx, tz, objs, robotId)) {
+      setPath([target])
+      return
+    }
+
+    // A* pathfinding
+    pathStatus.value = 'planning'
+    const wps = findPath(objs, rx, rz, tx, tz)
+
+    if (wps && wps.length > 0) {
+      wps[wps.length - 1] = target
+      setPath(wps)
+      console.log(`[SimStore] A* path: ${wps.length} waypoints`)
+    } else {
+      pathStatus.value = 'unreachable'
+      console.warn('[SimStore] A* could not find path')
+    }
+  }
+
+  /** Clicking ground always plans a path for the robot */
   function moveSelectedTo(target: [number, number, number]) {
     const targetPos: [number, number, number] = [
       Math.round(target[0] * 10) / 10,
       0.3,
       Math.round(target[2] * 10) / 10,
     ]
-    setPath([targetPos])
+    planPathTo(targetPos)
   }
 
   function executeInstruction(inst: IInstruction) {
@@ -78,7 +106,7 @@ export const useSimulationStore = defineStore('simulation', () => {
       case 'move_to': {
         const target = inst.params.target as [number, number, number]
         if (!target || target.length !== 3) return
-        setPath([target])
+        planPathTo([target[0], 0.3, target[2]])
         break
       }
       case 'follow_path': {
@@ -152,7 +180,7 @@ export const useSimulationStore = defineStore('simulation', () => {
     queryUserCandidates, selectedObjectId, selectedObject,
     isRobotMoving, latestCollisions,
     initScene, executeInstruction, resolveQueryUser, selectObject, moveSelectedTo,
-    setPath, advanceWaypoint,
+    setPath, advanceWaypoint, planPathTo,
     setCollisions, updateRobotPosition, addProfilerSnapshot, setStatus
   }
 })
